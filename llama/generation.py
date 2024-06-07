@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import time
+import numpy as np
 from pathlib import Path
 from typing import List, Optional, Tuple, TypedDict
 
@@ -226,6 +227,70 @@ class Llama:
             out_logprobs.append(probs)
         return (out_tokens, out_logprobs if logprobs else None)
 
+    @torch.inference_mode()
+    def get_semantic_score(
+        self,
+        dialogs: List[Dialog],
+        temperature: float = 0.6,
+        max_gen_len: Optional[int] = None,
+        action_list = ["scoop", "fork", "cut", "move", "stir", "DONE"],
+    ) -> List[ChatPrediction]:
+        if max_gen_len is None:
+            max_gen_len = self.model.params.max_seq_len - 1
+
+        # encode the dialog prompts
+        prompt_tokens = [
+            self.formatter.encode_dialog_prompt(dialog) for dialog in dialogs
+        ]
+        params = self.model.params
+        bsz = len(prompt_tokens)
+        assert bsz <= params.max_batch_size, (bsz, params.max_batch_size)
+
+        max_prompt_len = max(len(t) for t in prompt_tokens)
+        assert max_prompt_len <= params.max_seq_len
+        total_len = min(params.max_seq_len, max_gen_len + max_prompt_len)
+        
+        # pad the tokens
+        pad_id = self.tokenizer.pad_id
+        tokens = torch.full((bsz, total_len), pad_id, dtype=torch.long, device="cuda")
+
+        for k, t in enumerate(prompt_tokens):
+            tokens[k, : len(t)] = torch.tensor(t, dtype=torch.long, device="cuda")
+
+        action_token_ids = [self.tokenizer.encode(action, eos=False, bos=False) for action in action_list] if action_list else []
+        out_action_logprobs = []
+        for i, t in enumerate(prompt_tokens):
+            action_logprobs = {action: [] for action in action_list}
+            _action_logprobs = []
+            max_action_len = max([len(ids) for ids in action_token_ids])
+            prob_list = []
+            prev_pos = 0
+            for j in range(max_action_len):
+                logits = self.model.forward(tokens[:, prev_pos: len(t) + j], prev_pos)[:, -1]
+                if temperature > 0:
+                    probs = torch.softmax(logits / temperature, dim=-1)
+                tokens[i, len(t) + j] = torch.argmax(probs if temperature > 0 else logits, dim=-1).squeeze(0)
+                print(self.tokenizer.decode([tokens[i, len(t) + j]]), end=' ')
+                
+                prev_pos = len(t) + j
+                prob_list.append(probs if temperature > 0 else logits)
+                
+            for action, action_token_id in zip(action_list, action_token_ids):
+                logprobs = []
+                for j, id in enumerate(action_token_id):
+                    probs = prob_list[j]
+                    logprobs.append(probs[i, id].item())
+                _action_logprobs.append(np.mean(logprobs))
+                # action_logprobs[action] = [probs[i, id].item() for id in action_token_id] if temperature > 0 else [logits[i, -1, id].item() for id in action_token_id]
+                # action_logprobs[action] = np.sum(action_logprobs[action])
+            # _action_logprobs = torch.softmax(torch.Tensor(_action_logprobs, device='cuda'), dim=-1)
+            for i, action in enumerate(action_list):
+                action_logprobs[action] = _action_logprobs[i]
+            out_action_logprobs.append(action_logprobs)
+        print()
+        print(out_action_logprobs)
+        return out_action_logprobs
+     
     def text_completion(
         self,
         prompts: List[str],
