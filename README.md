@@ -7,7 +7,10 @@
 <br>
 
 ---
-
+# Our usage
+- We use Llama3 as a planning agent to provide the semantic score to help finish the robotics long-horizon food manipulation tasks. 
+- We add a `get_semantic` functions in <a href="https://github.com/ailuropodaWu/Scoop_Env_LLM/blob/main/llama/generation.py"> generation.py </a> 
+- **Here is the link of our project <a href="https://github.com/stanleyshen2003/scoop_env"> Scoop_env </a>**
 
 # Meta Llama 3
 
